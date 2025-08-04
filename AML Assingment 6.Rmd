@@ -1,0 +1,102 @@
+---
+title: "R Notebook"
+output:
+  word_document: default
+  pdf_document: default
+  html_notebook: default
+---
+##Hypothesis: 
+With this new learned functionality, I should be able to interpret and improve on a random forest (black box) data model to the same precsion as a linear model.  In order to accomplish this I am going to build boiler plate data models of both.  
+```{r}
+library(mlbench)
+library(randomForest)
+library(caret)
+library(lime)
+data("BostonHousing2")
+```
+
+##The data
+A common & repeatable data set for evaluation is the Boston Housing Data set.  We will be running a regression looking for the highest median value of the homes.  Because I promised to keep things simple I will be removing the town,  hence categorical values (when c >10) can become very difficult on the eyes to review.  This way we can compare values to the produce simple linear model and random forest regression model.  
+```{r}
+df <-  BostonHousing2[,-1]
+#Dividing the model 
+partition <- createDataPartition(df$medv, p = .85, 
+                                 list = FALSE, 
+                                 times = 1)
+train <- df[partition,]
+test <- df[-partition,] 
+x_test <- test[,-5]
+```
+
+##The linear model
+Below we will be feeding all of the data into the model and reviewing the affect it has.  It appears the significant values include: 
+  1) CMEDV: Median value of the owner in the area.  It could be criticied as being excessivly obvious, but it's definately valueable and significant.  
+  2) LAT: Latitude-  Boston is known for having a violent Irish south side with run down housing.  Crude geography is not always the best way to           measure these kinds of things, but it's the best indicator we have (As opposed to Zip/Prescinct/FIPS),  something I could join onto the data if I      had not promised to keep it simple.
+  3) TRACT: The tracking on of the census.  
+  4) Distance from one of the major highways.
+    
+```{r}
+basic <- glm(train$medv ~ . , train, family = gaussian)
+summary(basic) 
+```
+
+##The RF Model
+Below is the exact same approach, we are going to throw all of the vaiables at the RF model and see what happens.  
+```{r}
+model_rf <- train(medv ~ ., data = train,method = "rf")
+```
+## Evaluation
+Behold, I can evaluate any features within the test set.  
+
+This is where this project gets interesting, we will be looking deep into the model(4 layers) and seeing the behavior of the trees in the forest.  This requires a manual review and I have found for the first 4 evaluations.  
+####Reg 1
+As feared the first,  we are basing many of our instances based on longitude and  cmedv.  Then we see a correction based on proximity to the chas river. The Chas river was not what we expected to see in the linear model.  I will consider removing that.  
+###Reg 2
+In this iteration, we see only one of the 3 data points perfected in this model.  Interestingly, the results are quite alright with an rsquared of less then .01. 
+###Reg 3 
+In this we get a miss in rsqared.  Again, we are using only one (the most significant) of the tree variables
+###Reg 4 
+Looks just like the first regress.  I think that cmedv does the 'heavy lifting' towards an accurate meausure, then the other fields fill in with noise. 
+I am drawn to the conclusion that some of the less significant values are being selected randomly into the model and I can improve the RMSE if I only select values of high significance.
+```{r}
+# Create an explainer object
+explainer <- lime(test, model_rf,n_bins = 4, modeltype = "randomForest")
+# Select an instance for which you want an explanation
+instance <- df[1:10,]  # Select the first instance, excluding the target variable
+# Generate local explanations
+explanation <- explain(instance,explainer, n_features = 3)
+print(explanation)
+plot_features(explanation)
+```
+
+#New Random forest 
+To my disappointment, it looks like making the data focus on the significant variables actually increased the RMSE by 7%.  However, my failure is an opportunity to learn how reducing the dimensions of a RF model.  
+
+```{r}
+#New rf model
+train2 <- train[c("medv","cmedv", "lon", "lat", "tract", "rad")]
+test2 <- test[c("medv","cmedv", "lon", "lat", "tract", "rad")]
+model_rf_2 <- train(medv ~ ., data = train2,method = "rf")
+rf_pred2 <- predict(model_rf_2,newdata =  test2 )
+rmse2 <- sqrt(mean((rf_pred2 - test2$medv)^2))
+#Original rf preds
+rf_pred1 <- predict(model_rf,newdata =  test )
+rmse1 <- sqrt(mean((rf_pred1 - test$medv)^2))
+rmse1
+rmse2
+```
+
+
+```{r}
+instance2 <- test2[1:10,]
+# Create an explainer object
+explainer2 <- lime(test2, model_rf_2, modeltype = "randomForest")
+# Generate local explanations
+explanation2 <- explain(instance2,explainer2, n_features = 3)
+print(explanation2, n= 100)
+plot_features(explanation2)
+
+```
+
+
+The explination tells exactly why my reduced model under performed.  It appears that removing too many variables put too much weight on the features and caused them to under fit.  It seems that every single regression has a weight greater than.5 and in some cases a weight of 14.  It appears that having more data in the model can fill in additional steps.  
